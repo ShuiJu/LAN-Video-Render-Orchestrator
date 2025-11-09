@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>视频剪辑指令生成器</title>
+<style>
+body{font-family:Arial;margin:20px;}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+.button-group{display:flex;gap:10px;}
+.drop-zone{border:2px dashed #ccc;padding:160px;text-align:center;margin-bottom:20px;}
+.drop-zone.dragover{border-color:#000;}
+.input-group{margin-bottom:10px;}
+.output{margin-top:20px;padding:10px;background:#f5f5f5;border:1px solid #ccc;white-space:pre-wrap;}
+.copy-button{padding:10px 20px;background:#007bff;color:#fff;border:none;cursor:pointer;}
+.copy-button:hover{background:#0056b3;}
+.copy-button.av1{background:#28a745;}
+.copy-button.av1:hover{background:#1e7e34;}
+.copy-button.send{background:#ff9800;}
+.copy-button.send:hover{background:#e68900;}
+.copy-button.svt{background:#9c27b0;}
+.copy-button.svt:hover{background:#7b1fa2;}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>视频剪辑指令生成器</h1>
+  <div class="button-group">
+    <!-- <button class="copy-button" onclick="generateAndCopyCommand('hevc')">复制H265指令</button> -->
+    <!-- <button class="copy-button av1" onclick="generateAndCopyCommand('av1')">复制AV1指令</button> -->
+    <button class="copy-button send" onclick="sendToRenderServer()">发送到渲染机(NVEnc)</button>
+    <button class="copy-button svt" onclick="sendSVTJob()">发送SVT-AV1任务</button>
+  </div>
+</div>
+
+<div class="drop-zone" id="drop-zone">拖拽视频文件到这里</div>
+<div class="input-group">
+  <label>视频文件路径</label>
+  <input type="text" id="file-path" placeholder="例如：\\Shuiju的9slim\c\Videos\Replay.mp4"/>
+</div>
+<div class="input-group">
+  <label>--seek 起始时间</label>
+  <input type="number" id="seek-minutes" placeholder="分钟" style="width:8%"/>
+  <input type="number" id="seek-seconds" placeholder="秒钟" style="width:8%;"/>
+</div>
+<div class="input-group">
+  <label>--seekto 结束时间</label>
+  <input type="number" id="seekto-minutes" placeholder="分钟" style="width:8%"/>
+  <input type="number" id="seekto-seconds" placeholder="秒钟" style="width:8%;"/>
+</div>
+<div class="output" id="output"></div>
+
+<script>
+const PC2_IP="192.168.1.xx";          // 渲染机 IP
+const AUTH_TOKEN="1919810";
+
+const fp=document.getElementById("file-path"),out=document.getElementById("output");
+const sm=document.getElementById("seek-minutes"),ss=document.getElementById("seek-seconds");
+const em=document.getElementById("seekto-minutes"),es=document.getElementById("seekto-seconds");
+const dz=document.getElementById("drop-zone");
+
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('dragover');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('dragover'));
+dz.addEventListener('drop',e=>{
+  e.preventDefault();dz.classList.remove('dragover');
+  const f=e.dataTransfer.files[0];if(!f)return;
+  fp.value=`\\\\Shuiju的9slim\\c\\Videos\\${f.name}`;out.textContent=`已选择 ${f.name}`;
+});
+
+function calcFileSize(v,a,d){return ((v*1.1+a)*d)/(8*1024);}
+function calcBitrate(d){const max=50,def=9000,a=192,opts=[9000,8000,7000,6000,5000,4000,3000];
+ if(!d)return def;const fs=calcFileSize(def,a,d);if(fs<=max)return def;
+ const req=Math.floor((max*8*1024)/(1.1*d))-a;for(const b of opts)if(b<=req)return b;return opts.at(-1);
+}
+
+async function postJob(payload,label){
+ try{
+  const r=await fetch(`http://192.168.1.69:8088/job`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-Auth-Token':'20f01e4ae93f95d41cfdca0f180dec4c52430125'},
+    body:JSON.stringify(payload)
+  });
+  const t=await r.text();
+  alert(`${label} 返回: ${r.status} ${t}`);
+ }catch(e){alert(`${label} 失败: ${e}`);}
+}
+
+async function sendToRenderServer(){
+ const p=fp.value.trim();if(!p){alert("缺文件路径");return;}
+ const fn=p.split("\\").pop();
+ const sM=+sm.value||0,sS=+ss.value||0,eM=+em.value||0,eS=+es.value||0;
+ const dur=eM*60+eS-(sM*60+sS);const br=calcBitrate(dur>0?dur:0);
+ const pl={filename:fn,codec:"av1",bitrate:br,seek:`${sM}:${sS}`,seekto:`${eM}:${eS}`};
+ await postJob(pl,"NVEnc任务");
+}
+
+async function sendSVTJob(){
+ const p=fp.value.trim();if(!p){alert("缺文件路径");return;}
+ const fn=p.split("\\").pop();
+ const sM=+sm.value||0,sS=+ss.value||0,eM=+em.value||0,eS=+es.value||0;
+ const dur=eM*60+eS-(sM*60+sS);const br=calcBitrate(dur>0?dur:0);
+ const pl={filename:fn,codec:"svt-av1",bitrate:br,seek:`${sM}:${sS}`,seekto:`${eM}:${eS}`};
+ await postJob(pl,"SVT-AV1任务");
+}
+</script>
+</body>
+</html>
