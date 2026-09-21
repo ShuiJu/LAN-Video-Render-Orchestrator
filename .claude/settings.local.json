@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(GOOS=windows GOARCH=amd64 go build -ldflags=\"-s -w\" -o render_server_v0.2.exe render_server.go)",
+      "Read(//c/Users/Admin/.claude/projects/c--Users-Admin-Documents-VSC-render-server/memory/**)",
+      "Bash(go build ./...)",
+      "Bash(go build -o /dev/null render_server.go)",
+      "Bash(go build -o render_server_v1.0.exe render_server.go)",
+      "Bash(ls -la c:/Users/Admin/Documents/VSC/render_server/*.exe)"
+    ]
+  }
+}
