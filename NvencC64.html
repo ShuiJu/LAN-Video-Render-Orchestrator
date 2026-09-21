@@ -43,8 +43,8 @@ body{font-family:Arial;margin:20px;}
   <input type="text" id="file-path" placeholder="例如：\\Shuijuno9slim\c\Videos\Replay.mp4"/>
 </div>
 <div class="input-group" id="local-dir-group" style="display:none">
-  <label>本机输入目录 <span class="local-info">（拖入文件时自动拼合路径，留空则手动输入完整路径）</span></label>
-  <input type="text" id="local-base-dir" placeholder="例如：C:\Videos\" style="width:55%"/>
+  <label>本机输入目录 <span class="local-info">（已锁定，拖入文件自动拼合路径）</span></label>
+  <input type="text" id="local-base-dir" value="E:\素材E" readonly style="width:55%;background:#f0f0f0;color:#555"/>
 </div>
 <div class="input-group">
   <label>--seek 起始时间</label>
@@ -57,7 +57,7 @@ body{font-family:Arial;margin:20px;}
   <input type="number" id="seekto-seconds" placeholder="秒钟" style="width:8%;"/>
 </div>
 <div class="input-group">
-  <label>编码器&nbsp;</label>
+  <label id="codec-label">编码器&nbsp;</label>
   <select id="codec-override">
     <option value="auto">自动</option>
     <option value="av1">av1（NVEnc）</option>
@@ -70,7 +70,7 @@ body{font-family:Arial;margin:20px;}
   </select>
 </div>
 <div id="local-output-hint" style="display:none;margin-top:8px;padding:7px 10px;background:#e8f5e9;border:1px solid #a5d6a7;font-size:13px;color:#2e7d32;">
-  本机快剪模式：输出文件将保存到<strong>输入文件同目录</strong>，文件名格式为 <code>原名_编码器_码率k.mp4</code>
+  本机快剪模式：固定使用 <strong>NVEnc HEVC（main10 / P7 / uhq）</strong> 编码（无论码率高低），输出保存到 <strong>C:\Users\Admin\Videos\Media Encoder 9Slim渲染机输出\</strong>，文件名格式为 <code>原名_hevc_码率k.mp4</code>
 </div>
 <div class="output" id="output"></div>
 
@@ -96,6 +96,8 @@ function setMode(mode) {
   currentMode = mode;
   localStorage.setItem('renderMode', mode);
   const isLocal = mode === 'local';
+  codecSel.disabled = isLocal;
+  document.getElementById('codec-label').textContent = isLocal ? '编码器（本机固定 HEVC）' : '编码器';
   document.getElementById('tab-remote').className = 'mode-tab' + (isLocal ? '' : ' active');
   document.getElementById('tab-local').className  = 'mode-tab' + (isLocal ? ' active local-active' : '');
   document.getElementById('local-dir-group').style.display   = isLocal ? '' : 'none';
@@ -103,17 +105,16 @@ function setMode(mode) {
   document.getElementById('send-btn').textContent = isLocal ? '发送到本机服务器' : '发送到渲染机';
   document.getElementById('path-label').textContent = isLocal ? '视频文件路径（完整本地路径）' : '视频文件路径';
   fp.placeholder = isLocal
-    ? '例如：C:\\Videos\\clip.mp4（可设置上方目录后拖入文件自动填充）'
+    ? '例如：E:\\素材E\\clip.mp4（拖入文件自动填充）'
     : '例如：\\\\Shuijuno9slim\\c\\Videos\\Replay.mp4';
   fp.value = '';
   out.textContent = '';
 }
 
-// 恢复上次保存的本机目录
-localBaseDirInput.value = localStorage.getItem('localBaseDir') || '';
-localBaseDirInput.addEventListener('input', () => {
-  localStorage.setItem('localBaseDir', localBaseDirInput.value);
-});
+// 本机输入目录锁定为 E:\素材E
+const LOCAL_INPUT_DIR = "E:\\素材E";
+localBaseDirInput.value = LOCAL_INPUT_DIR;
+localBaseDirInput.readOnly = true;
 
 // ── 拖放 ──
 dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('dragover');});
@@ -179,14 +180,15 @@ async function sendToRenderServer(){
   const brSrc=manualBr?"手动":"自动计算", codecSrc=manualCodec?"手动":"自动";
 
   if(currentMode==='local'){
-    // 本机快剪：把完整路径作为 filename，服务器自动计算输出
+    // 本机快剪：固定 NVEnc HEVC，把完整路径作为 filename
+    codecType='hevc';
     const pl={filename:p, codec:codecType, bitrate:br,
               seek:`${sM}:${sS}`, seekto:`${eM}:${eS}`, local:true};
-    await postJob(pl, jobLabel, LOCAL_SERVER);
+    await postJob(pl, '本机快剪 HEVC 任务', LOCAL_SERVER);
     const base=p.split('\\').pop();
     const stem=base.replace(/\.[^.]+$/,'');
-    const outName=`${stem}_${codecType}_${br}k.mp4`;
-    out.textContent=`文件: ${base}\n时长: ${dur}秒\n码率: ${br}kbps（${brSrc}）\n编码器: ${codecType}（${codecSrc}）\n输出文件: ${outName}\n任务已发送: ${jobLabel}`;
+    const outName=`${stem}_hevc_${br}k.mp4`;
+    out.textContent=`文件: ${base}\n时长: ${dur}秒\n码率: ${br}kbps（${brSrc}）\n编码器: HEVC / NVEnc（本机固定）\n输出文件: C:\\Users\\Admin\\Videos\\Media Encoder 9Slim渲染机输出\\${outName}\n任务已发送: 本机快剪 HEVC 任务`;
   } else {
     // 双机模式：原有逻辑，只传文件名
     const fn=p.split("\\").pop();

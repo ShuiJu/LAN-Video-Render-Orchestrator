@@ -24,6 +24,13 @@ const (
 	TASK_TIMEOUT      = 3 * time.Hour
 	LOG_FILE          = "render_server.log"
 	QUEUE_SIZE        = 50 // 最大排队任务数
+
+	// 本机快剪输入目录（锁定）
+	LOCAL_INPUT_DIR = `E:\素材E`
+	// 本机快剪输出目录
+	LOCAL_OUTPUT_DIR = `C:\Users\Admin\Videos\Media Encoder 9Slim渲染机输出`
+	// NVEncC64.exe 备用搜索目录（用户手动安装位置）
+	NVENCC_FALLBACK_DIR = `C:\Users\Admin\Documents\NVENCC64`
 )
 
 // 工具路径：启动时由 checkEnvironment() 解析，支持 exe同目录 / tools子目录 / PATH
@@ -46,7 +53,7 @@ var (
 	jobQueue       = make(chan Job, QUEUE_SIZE)
 	validName      = regexp.MustCompile(`^[\p{Han}A-Za-z0-9 _\.\-]+$`)
 	validLocalPath = regexp.MustCompile(`^[A-Za-z]:\\(?:[\p{Han}A-Za-z0-9 _\.\-\(\)\[\]]+\\)*[\p{Han}A-Za-z0-9 _\.\-\(\)\[\]]+$`)
-	allowedMap     = map[string]bool{"av1": true, "svt-av1": true}
+	allowedMap     = map[string]bool{"av1": true, "svt-av1": true, "hevc": true}
 )
 
 func init() {
@@ -102,6 +109,11 @@ func validateJob(j *Job) error {
 		if !validLocalPath.MatchString(j.Filename) {
 			return errors.New("invalid local path: must be absolute Windows path (e.g. C:\\Videos\\clip.mp4)")
 		}
+		clean := filepath.Clean(strings.ReplaceAll(j.Filename, "/", `\`))
+		prefix := strings.ToLower(strings.TrimRight(LOCAL_INPUT_DIR, `\`)) + `\`
+		if !strings.HasPrefix(strings.ToLower(clean), prefix) {
+			return fmt.Errorf("local input must be under %s", LOCAL_INPUT_DIR)
+		}
 	} else {
 		if !validName.MatchString(j.Filename) {
 			return errors.New("invalid filename")
@@ -124,11 +136,14 @@ func resolveJobPaths(job Job) (input, output string, err error) {
 			err = fmt.Errorf("input file not found: %s", input)
 			return
 		}
-		dir := filepath.Dir(input)
 		base := filepath.Base(input)
 		ext := filepath.Ext(base)
 		stem := base[:len(base)-len(ext)]
-		output = filepath.Join(dir, fmt.Sprintf("%s_%s_%dk.mp4", stem, strings.ToLower(job.Codec), job.Bitrate))
+		if mkErr := os.MkdirAll(LOCAL_OUTPUT_DIR, 0o755); mkErr != nil {
+			err = fmt.Errorf("cannot create output dir %s: %v", LOCAL_OUTPUT_DIR, mkErr)
+			return
+		}
+		output = filepath.Join(LOCAL_OUTPUT_DIR, fmt.Sprintf("%s_%s_%dk.mp4", stem, strings.ToLower(job.Codec), job.Bitrate))
 		return
 	}
 	input = safeJoinInput(job.Filename)
@@ -186,6 +201,72 @@ func runNVEnc(job Job, input, output string) error {
 	}
 	os.Remove(tmpOutput)
 	log.Printf("NVEnc AV1 done for %s", job.Filename)
+	return nil
+}
+
+// runNVEncHEVC 本机快剪专用：NVEnc HEVC 固定画质配置
+func runNVEncHEVC(job Job, input, output string) error {
+	tmpOutput := output + ".tmp.mp4"
+	br := job.Bitrate
+
+	args := []string{
+		"--codec", "hevc",
+		"--profile", "main10",
+		"--output-depth", "10",
+		"--preset", "P7",
+		"--tune", "uhq",
+		"--vbr", fmt.Sprint(br),
+		"--max-bitrate", fmt.Sprint(br * 2),
+		"--multipass", "2pass-full",
+		"--lookahead", "32",
+		"--lookahead-level", "3",
+		"--aq", "--aq-temporal",
+		"--aq-strength", "8",
+		"--bframes", "4",
+		"--bref-mode", "middle",
+		"--ref", "7",
+		"--mv-precision", "Q-pel",
+		"--split-enc", "disable",
+		"--colorrange", "auto",
+		"--colormatrix", "auto",
+		"--colorprim", "auto",
+		"--transfer", "auto",
+		"--chromaloc", "auto",
+		"--audio-codec", "1?aac:aac_coder=twoloop",
+		"--audio-bitrate", "192",
+		"-i", input, "-o", tmpOutput,
+	}
+	if job.Seek != "" {
+		args = append(args, "--seek", job.Seek)
+	}
+	if job.SeekTo != "" {
+		args = append(args, "--seekto", job.SeekTo)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), TASK_TIMEOUT)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, NVENCC_PATH, args...)
+	log.Println("Running NVEnc HEVC:", cmd.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("NVEnc HEVC error: %v\n%s", err, string(out))
+		return err
+	}
+
+	// 网页优化：将 moov atom 移到文件头部（faststart）
+	log.Println("Applying web optimization (faststart)...")
+	remux := exec.CommandContext(ctx, FFMPEG_PATH,
+		"-y", "-i", tmpOutput,
+		"-c", "copy",
+		"-movflags", "+faststart",
+		output,
+	)
+	if out, err := remux.CombinedOutput(); err != nil {
+		log.Printf("Faststart remux error: %v\n%s", err, string(out))
+		os.Remove(tmpOutput)
+		return err
+	}
+	os.Remove(tmpOutput)
+	log.Printf("NVEnc HEVC done for %s", job.Filename)
 	return nil
 }
 
@@ -271,6 +352,8 @@ func worker() {
 			err = runFFmpeg(job, input, output)
 		case "av1":
 			err = runNVEnc(job, input, output)
+		case "hevc":
+			err = runNVEncHEVC(job, input, output)
 		default:
 			err = fmt.Errorf("unknown codec: %s", job.Codec)
 		}
@@ -316,6 +399,10 @@ func jobHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &job); err != nil {
 		http.Error(w, "bad json", 400)
 		return
+	}
+	// 本机快剪固定使用 NVEnc HEVC，忽略请求中的编码器
+	if job.Local {
+		job.Codec = "hevc"
 	}
 	if err := validateJob(&job); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -369,7 +456,7 @@ func checkEnvironment() {
 		exeDir = filepath.Dir(exePath)
 	}
 	toolsDir := filepath.Join(exeDir, "tools")
-	searchDirs := []string{exeDir, toolsDir, "."}
+	searchDirs := []string{exeDir, toolsDir, ".", NVENCC_FALLBACK_DIR}
 
 	log.Println("[ENV] 检查运行环境...")
 
